@@ -1,0 +1,404 @@
+// Core Banking Platform - Prisma ORM Schema
+// Double-entry bookkeeping system with blockchain audit anchoring
+// All timestamps in UTC; amounts in decimal for precision
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ============================================================================
+// DOMAIN: USER & IDENTITY MANAGEMENT
+// ============================================================================
+
+model User {
+  id                String   @id @default(cuid())
+  email             String   @unique @db.VarChar(255)
+  phoneNumber       String?  @unique @db.VarChar(20)
+  passwordHash      String   @db.VarChar(255)
+  
+  // UPI Handle: user@mybank (must be unique across system)
+  upiHandle         String   @unique @db.VarChar(50)
+  
+  firstName         String   @db.VarChar(100)
+  lastName          String   @db.VarChar(100)
+  kycStatus         KycStatus @default(PENDING)
+  kycVerifiedAt     DateTime?
+  
+  createdAt         DateTime @default(now()) @db.Timestamp()
+  updatedAt         DateTime @updatedAt @db.Timestamp()
+  deletedAt         DateTime?
+  
+  // Relations
+  accounts          Account[]
+  transactionsSent  Transaction[] @relation("SenderTransaction")
+  transactionsRcvd  Transaction[] @relation("ReceiverTransaction")
+  sessions          Session[]
+  deviceTokens      DeviceToken[]
+  idempotencyRecords IdempotencyRecord[]
+  
+  @@index([email])
+  @@index([upiHandle])
+  @@index([kycStatus])
+}
+
+enum KycStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  SUSPENDED
+}
+
+// ============================================================================
+// DOMAIN: AUTHENTICATION & SESSION MANAGEMENT
+// ============================================================================
+
+model Session {
+  id                String    @id @default(cuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Token tracking for JWT validation
+  tokenHash         String    @unique @db.Char(64) // SHA256 of token
+  
+  // Device fingerprinting for multi-device tracking
+  userAgent         String    @db.VarChar(500)
+  ipAddress         String    @db.VarChar(45) // IPv4 or IPv6
+  deviceId          String    @db.VarChar(255)
+  
+  // Session lifecycle
+  expiresAt         DateTime  @db.Timestamp()
+  revokedAt         DateTime?
+  lastActivityAt    DateTime  @default(now()) @db.Timestamp()
+  
+  createdAt         DateTime  @default(now()) @db.Timestamp()
+  
+  // Prevent concurrent sessions per device
+  @@unique([userId, deviceId])
+  @@index([userId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+}
+
+model DeviceToken {
+  id                String    @id @default(cuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  deviceId          String    @db.VarChar(255)
+  pushToken         String    @db.VarChar(1000)
+  deviceType        DeviceType
+  
+  registeredAt      DateTime  @default(now()) @db.Timestamp()
+  lastUsedAt        DateTime?
+  
+  @@unique([userId, deviceId])
+  @@index([userId])
+}
+
+enum DeviceType {
+  MOBILE_IOS
+  MOBILE_ANDROID
+  TABLET_IOS
+  TABLET_ANDROID
+  WEB_DESKTOP
+  WEB_TABLET
+}
+
+// ============================================================================
+// DOMAIN: ACCOUNTS & BALANCES
+// ============================================================================
+
+model Account {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  accountNumber     String   @unique @db.VarChar(20)
+  accountType       AccountType @default(SAVINGS)
+  currency          String   @default("MYSIM") @db.Char(6)
+  
+  // Balance calculated from Transaction ledger (indexed for fast queries)
+  // CRITICAL: Always compute from Transactions table in queries; never trust cache
+  currentBalance    Decimal  @default(0) @db.Decimal(18, 6)
+  
+  // Audit fields
+  createdAt         DateTime @default(now()) @db.Timestamp()
+  updatedAt         DateTime @updatedAt @db.Timestamp()
+  status            AccountStatus @default(ACTIVE)
+  
+  // Relations
+  transactionsSent  Transaction[] @relation("SenderAccount")
+  transactionsRcvd  Transaction[] @relation("ReceiverAccount")
+  
+  @@unique([userId, accountType])
+  @@index([userId])
+  @@index([accountNumber])
+}
+
+enum AccountType {
+  SAVINGS
+  CURRENT
+  SIMULATION
+}
+
+enum AccountStatus {
+  ACTIVE
+  FROZEN
+  SUSPENDED
+  CLOSED
+}
+
+// ============================================================================
+// DOMAIN: IMMUTABLE TRANSACTION LEDGER (Double-Entry Bookkeeping)
+// ============================================================================
+
+model Transaction {
+  // Primary identifier: Twitter Snowflake ID (UUIDv5 alternative for distributed generation)
+  id                String   @id @default(cuid())
+  
+  // UPI Reference Number (RRN): YYYY + DDD (day of year) + 6 random hex digits
+  // Example: 2024018A4F7C9E (2024, day 018, hex random)
+  rrn               String   @unique @db.VarChar(20)
+  
+  // Sender side (always debit)
+  senderId          String
+  sender            User     @relation("SenderTransaction", fields: [senderId], references: [id])
+  senderAccountId   String
+  senderAccount     Account  @relation("SenderAccount", fields: [senderAccountId], references: [id])
+  
+  // Receiver side (always credit)
+  receiverId        String
+  receiver          User     @relation("ReceiverTransaction", fields: [receiverId], references: [id])
+  receiverAccountId String
+  receiverAccount   Account  @relation("ReceiverAccount", fields: [receiverAccountId], references: [id])
+  
+  // Transaction amount (validated as strictly positive decimal)
+  amount            Decimal  @db.Decimal(16, 6)
+  currency          String   @default("MYSIM") @db.Char(6)
+  
+  // Transaction metadata
+  description       String   @db.VarChar(500)
+  transactionType   TransactionType
+  status            TransactionStatus @default(PENDING)
+  
+  // Idempotency tracking
+  idempotencyKey    String   @unique @db.VarChar(36) // UUIDv4
+  
+  // Blockchain anchor hash: hash(id + sender + receiver + amount + timestamp)
+  txHash            String?  @unique @db.Char(66) // 0x + 64 hex (Keccak256)
+  blockchainStatus  BlockchainStatus @default(PENDING)
+  blockchainTxId    String?  @db.VarChar(255) // On-chain transaction ID
+  blockedAt         DateTime?
+  
+  // Error tracking for failed transactions
+  errorReason       String?  @db.Text
+  failureRetries    Int      @default(0)
+  
+  // Timestamps
+  createdAt         DateTime @default(now()) @db.Timestamp()
+  settledAt         DateTime?
+  
+  // Relations
+  blockchainAudit   BlockchainAuditLog?
+  
+  @@index([senderId])
+  @@index([receiverId])
+  @@index([senderAccountId])
+  @@index([receiverAccountId])
+  @@index([status])
+  @@index([blockchainStatus])
+  @@index([createdAt])
+  @@index([rrn])
+}
+
+enum TransactionType {
+  UPI_TRANSFER
+  MOBILE_RECHARGE
+  UTILITY_BILL_PAYMENT
+  INTERNAL_TRANSFER
+  SIMULATION_CREDIT
+}
+
+enum TransactionStatus {
+  PENDING
+  PROCESSING
+  SETTLED
+  FAILED
+  ROLLED_BACK
+  CANCELLED
+}
+
+enum BlockchainStatus {
+  PENDING        // Awaiting blockchain anchor
+  ANCHORED       // Successfully recorded on-chain
+  VERIFIED       // Cryptographically verified
+  FAILED         // Blockchain write failed
+  DISPUTED       // Inconsistency detected
+}
+
+// ============================================================================
+// DOMAIN: BLOCKCHAIN AUDIT TRAIL (Immutable Record)
+// ============================================================================
+
+model BlockchainAuditLog {
+  id                String   @id @default(cuid())
+  
+  // Link to transaction
+  transactionId     String   @unique
+  transaction       Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  
+  // Cryptographic hash chain
+  txHash            String   @unique @db.Char(66) // Transaction hash: 0x + 64 hex
+  previousHash      String?  @db.Char(66) // Link to previous block (for chain verification)
+  
+  // Blockchain metadata
+  blockNumber       BigInt?
+  blockHash         String?  @db.Char(66)
+  gasUsed           BigInt?
+  
+  // Smart contract interaction
+  smartContractAddr String  @db.VarChar(42) // 0x + 40 hex
+  eventSignature    String  @db.VarChar(66) // Event log signature
+  
+  // Verification fields
+  verificationStatus VerificationStatus @default(PENDING)
+  verifiedAt        DateTime?
+  verificationProof String? @db.Text // JSON merkle proof
+  
+  // Timestamps
+  anchoredAt        DateTime @default(now()) @db.Timestamp()
+  syncedToChainAt   DateTime?
+  
+  @@index([transactionId])
+  @@index([txHash])
+  @@index([blockNumber])
+  @@index([verificationStatus])
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  FAILED
+  DISPUTED
+}
+
+// ============================================================================
+// DOMAIN: IDEMPOTENCY & DEDUPLICATION
+// ============================================================================
+
+model IdempotencyRecord {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // UUIDv4 provided by client in X-Idempotency-Key header
+  idempotencyKey    String   @unique @db.VarChar(36)
+  
+  // Request response cached for 120 seconds (TTL managed by application)
+  requestHash       String   @db.Char(64) // SHA256 of request body
+  responsePayload   String   @db.Text // JSON response cached
+  
+  // HTTP metadata
+  method            String   @db.VarChar(10)
+  path              String   @db.VarChar(500)
+  
+  createdAt         DateTime @default(now()) @db.Timestamp()
+  expiresAt         DateTime @db.Timestamp() // 120 second window
+  
+  @@unique([userId, idempotencyKey])
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ============================================================================
+// DOMAIN: THIRD-PARTY INTEGRATIONS & ASYNC JOBS
+// ============================================================================
+
+model ThirdPartyGateway {
+  id                String   @id @default(cuid())
+  
+  // Operator metadata
+  operatorName      String   @db.VarChar(100) // "Jio", "Airtel", "BSNL", etc.
+  operatorType      OperatorType
+  
+  // Gateway configuration
+  apiEndpoint       String   @db.VarChar(500)
+  apiKey            String   @db.VarChar(500) // Encrypted at rest
+  
+  status            GatewayStatus @default(ACTIVE)
+  
+  createdAt         DateTime @default(now()) @db.Timestamp()
+  updatedAt         DateTime @updatedAt @db.Timestamp()
+  
+  // Relations
+  jobs              AsyncJob[]
+  
+  @@index([operatorType])
+}
+
+enum OperatorType {
+  MOBILE_TELECOM     // Jio, Airtel, BSNL
+  UTILITY_PROVIDER   // Electricity, Water, Gas
+  PAYMENT_PROCESSOR
+}
+
+enum GatewayStatus {
+  ACTIVE
+  INACTIVE
+  MAINTENANCE
+  DEPRECATED
+}
+
+model AsyncJob {
+  id                String   @id @default(cuid())
+  
+  // Job metadata
+  jobType           JobType
+  gatewayId         String
+  gateway           ThirdPartyGateway @relation(fields: [gatewayId], references: [id])
+  
+  // Reference back to transaction or primary entity
+  transactionId     String?  @db.VarChar(36)
+  referenceId       String   @unique @db.VarChar(255) // Operator's reference ID
+  
+  // Job payload (encrypted if sensitive)
+  payload           String   @db.Text // JSON payload
+  
+  // Job lifecycle
+  status            JobStatus @default(PENDING)
+  attempts          Int       @default(0)
+  maxRetries        Int       @default(3)
+  
+  // Response tracking
+  responseData      String?   @db.Text
+  errorMessage      String?   @db.Text
+  
+  createdAt         DateTime @default(now()) @db.Timestamp()
+  processedAt       DateTime?
+  nextRetryAt       DateTime?
+  
+  @@index([jobType])
+  @@index([status])
+  @@index([nextRetryAt])
+}
+
+enum JobType {
+  MOBILE_RECHARGE
+  UTILITY_PAYMENT
+  DISPUTE_RESOLUTION
+  SETTLEMENT_BATCH
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  RETRYING
+  DEAD_LETTER
+}

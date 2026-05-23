@@ -1,0 +1,145 @@
+version: '3.9'
+
+services:
+  # =========================================================================
+  # PostgreSQL: Primary database for double-entry bookkeeping
+  # =========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: banking-postgres
+    environment:
+      POSTGRES_USER: banking_user
+      POSTGRES_PASSWORD: banking_password_dev
+      POSTGRES_DB: core_banking_db
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U banking_user -d core_banking_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - banking-network
+
+  # =========================================================================
+  # Redis: Distributed locking, session storage, idempotency cache
+  # =========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: banking-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - banking-network
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    # Enable AOF (Append-Only File) for persistence
+    # maxmemory policy: evict least recently used keys when at capacity
+
+  # =========================================================================
+  # Hardhat: Local EVM blockchain for smart contract testing
+  # =========================================================================
+  hardhat:
+    image: node:22-alpine
+    container_name: banking-hardhat
+    working_dir: /hardhat
+    volumes:
+      - ./blockchain:/hardhat
+    ports:
+      - "8545:8545"
+    networks:
+      - banking-network
+    command: sh -c "npm install && npx hardhat node --hostname 0.0.0.0"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8545"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================================================================
+  # pgAdmin: PostgreSQL management interface (optional, development only)
+  # =========================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: banking-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@mybank.local
+      PGADMIN_DEFAULT_PASSWORD: admin_password_dev
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - banking-network
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  # =========================================================================
+  # Redis Commander: Redis management interface (optional, development only)
+  # =========================================================================
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: banking-redis-commander
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - banking-network
+
+networks:
+  banking-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+# 
+# Start all services:
+#   docker-compose up -d
+#
+# View logs:
+#   docker-compose logs -f postgres
+#   docker-compose logs -f redis
+#   docker-compose logs -f hardhat
+#
+# Access interfaces:
+#   PostgreSQL: localhost:5432 (psql tool or DBeaver)
+#   pgAdmin: http://localhost:5050 (admin@mybank.local / admin_password_dev)
+#   Redis: localhost:6379 (redis-cli tool or http://localhost:8081)
+#   Hardhat RPC: http://localhost:8545 (for ethers.js connection)
+#
+# Connect Node.js app:
+#   DATABASE_URL=postgresql://banking_user:banking_password_dev@localhost:5432/core_banking_db
+#   REDIS_URL=redis://localhost:6379
+#   BLOCKCHAIN_RPC_URL=http://localhost:8545
+#
+# Stop all services:
+#   docker-compose down
+#
+# Clean up (remove volumes):
+#   docker-compose down -v
+#
+# Scale services:
+#   docker-compose up -d --scale redis=3 (not applicable for our use case)
