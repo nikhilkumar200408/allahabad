@@ -39,9 +39,9 @@ export declare class TransferController {
         blockchainAudit: {
             id: string;
             txHash: string;
-            transactionId: string;
             previousHash: string | null;
             blockNumber: bigint | null;
+            transactionId: string;
             blockHash: string | null;
             gasUsed: bigint | null;
             smartContractAddr: string;
@@ -52,24 +52,24 @@ export declare class TransferController {
             anchoredAt: Date;
             syncedToChainAt: Date | null;
         };
+        description: string;
         id: string;
+        createdAt: Date;
+        currency: string;
+        status: import(".prisma/client").$Enums.TransactionStatus;
+        txHash: string | null;
         rrn: string;
         idempotencyKey: string;
-        txHash: string | null;
         senderId: string;
         senderAccountId: string;
         receiverId: string;
         receiverAccountId: string;
-        currency: string;
-        description: string;
         transactionType: import(".prisma/client").$Enums.TransactionType;
-        status: import(".prisma/client").$Enums.TransactionStatus;
         blockchainStatus: import(".prisma/client").$Enums.BlockchainStatus;
         blockchainTxId: string | null;
         blockedAt: Date | null;
         errorReason: string | null;
         failureRetries: number;
-        createdAt: Date;
         settledAt: Date | null;
     }>;
     getTransactionByRrn(currentUser: any, rrn: string): Promise<{
@@ -85,9 +85,9 @@ export declare class TransferController {
         blockchainAudit: {
             id: string;
             txHash: string;
-            transactionId: string;
             previousHash: string | null;
             blockNumber: bigint | null;
+            transactionId: string;
             blockHash: string | null;
             gasUsed: bigint | null;
             smartContractAddr: string;
@@ -98,24 +98,24 @@ export declare class TransferController {
             anchoredAt: Date;
             syncedToChainAt: Date | null;
         };
+        description: string;
         id: string;
+        createdAt: Date;
+        currency: string;
+        status: import(".prisma/client").$Enums.TransactionStatus;
+        txHash: string | null;
         rrn: string;
         idempotencyKey: string;
-        txHash: string | null;
         senderId: string;
         senderAccountId: string;
         receiverId: string;
         receiverAccountId: string;
-        currency: string;
-        description: string;
         transactionType: import(".prisma/client").$Enums.TransactionType;
-        status: import(".prisma/client").$Enums.TransactionStatus;
         blockchainStatus: import(".prisma/client").$Enums.BlockchainStatus;
         blockchainTxId: string | null;
         blockedAt: Date | null;
         errorReason: string | null;
         failureRetries: number;
-        createdAt: Date;
         settledAt: Date | null;
     }>;
     verifyOnBlockchain(currentUser: any, dto: VerifyTransactionDTO): Promise<{
@@ -132,24 +132,24 @@ export declare class TransferController {
             receiver: {
                 upiHandle: string;
             };
+            description: string;
             id: string;
+            createdAt: Date;
+            currency: string;
+            status: import(".prisma/client").$Enums.TransactionStatus;
+            txHash: string | null;
             rrn: string;
             idempotencyKey: string;
-            txHash: string | null;
             senderId: string;
             senderAccountId: string;
             receiverId: string;
             receiverAccountId: string;
-            currency: string;
-            description: string;
             transactionType: import(".prisma/client").$Enums.TransactionType;
-            status: import(".prisma/client").$Enums.TransactionStatus;
             blockchainStatus: import(".prisma/client").$Enums.BlockchainStatus;
             blockchainTxId: string | null;
             blockedAt: Date | null;
             errorReason: string | null;
             failureRetries: number;
-            createdAt: Date;
             settledAt: Date | null;
         }[];
         pagination: {
